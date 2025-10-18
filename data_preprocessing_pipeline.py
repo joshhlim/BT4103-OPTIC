@@ -188,22 +188,197 @@ def handle_high_cardinality(df, threshold=100, min_freq=10):
     return df
 
 # ============================================================================
+# 4a. CUSTOM FUNCTION TO CATEGORIZE IMPLANT COLUMN
+# ============================================================================
+
+def categorize_implant(text):
+    if pd.isna(text) or str(text).strip() == "" or str(text).lower() == "0":
+        return "Unknown"
+    text = str(text).lower()
+
+    # Orthopedic & Spine
+    if any(k in text for k in ["screw", "plate", "rod", "arthrex", "zimmer", "synthes", "bone"]):
+        return "Orthopedic"
+    if any(k in text for k in ["solera", "spine", "cage", "medtronic", "pedicle"]):
+        return "Spine Surgery"
+    
+    # Neurosurgery
+    if any(k in text for k in ["neuro", "cranial", "burr", "crani", "mesh"]):
+        return "Neurosurgery"
+    
+    # ENT
+    if any(k in text for k in ["eustachian", "sinus", "trache", "balloon", "ear", "nose", "throat"]):
+        return "ENT"
+    
+    # Ophthalmology
+    if any(k in text for k in ["lens", "cataract", "eye", "vitrectomy"]):
+        return "Ophthalmology"
+    
+    # Dental / Maxillofacial
+    if any(k in text for k in ["mandible", "maxilla", "dental", "tooth", "oral", "implant"]):
+        return "Dental / Maxillofacial"
+    
+    # Cardiac / Vascular
+    if any(k in text for k in ["stent", "valve", "graft", "aorta", "cardiac"]):
+        return "Cardiac / Vascular"
+    
+    # Urology
+    if any(k in text for k in ["catheter", "stent", "nephro", "ureter", "urine"]):
+        return "Urology"
+    
+    # Gynecology / Obstetrics
+    if any(k in text for k in ["hysterec", "uterus", "pregnan", "ovary"]):
+        return "Gynecology / Obstetrics"
+    
+    # Laparoscopic / General Surgery
+    if any(k in text for k in ["lapar", "trocar", "port", "camera"]):
+        return "Laparoscopic / General Surgery"
+    
+    # Upper Limb
+    if any(k in text for k in ["shoulder", "elbow", "hand", "radius", "ulna"]):
+        return "Orthopedic – Upper Limb"
+    
+    # Lower Limb
+    if any(k in text for k in ["knee", "hip", "femur", "tibia", "ankle"]):
+        return "Orthopedic – Lower Limb"
+    
+    # Plastic / Reconstructive
+    if any(k in text for k in ["flap", "graft", "reconstruct"]):
+        return "Plastic / Reconstructive"
+    
+    # Endoscopy Equipment
+    if any(k in text for k in ["scope", "endosc", "camera", "light source"]):
+        return "Endoscopy Equipment"
+    
+    # Power Tools / Instruments
+    if any(k in text for k in ["drill", "burr", "saw", "cutter"]):
+        return "Power Tools / Instruments"
+    
+    # Vendor / Logistics
+    if any(k in text for k in ["tray", "set", "vendor", "system", "standby"]):
+        return "Vendor / Logistics"
+    
+    return "Other"
+
+# ============================================================================
+# 4b. CUSTOM FUNCTION TO CATEGORIZE DIAGNOSIS COLUMN
+# ============================================================================
+
+def categorize_diagnosis(text):
+    if pd.isna(text):
+        return 'Unknown'
+
+    text = str(text).lower().strip()
+
+    # --- Oncological ---
+    if 'cancer' in text or 'carcinoma' in text or 'malignant' in text or 'tumor' in text or 'ca ' in text:
+        return 'Cancer'
+
+    # --- Urological / Renal ---
+    if 'stone' in text or 'nephrolith' in text or 'urolith' in text:
+        return 'Gallstone/Kidney Stone'
+    if 'hydronephrosis' in text or 'renal' in text or 'kidney' in text:
+        return 'Renal/Urological'
+
+    # --- Trauma / Injury ---
+    if 'fracture' in text or 'rupture' in text or 'tear' in text or 'injury' in text or 'trauma' in text:
+        return 'Trauma'
+
+    # --- Obstetric / Gynecologic ---
+    if 'pregnancy' in text or 'gravid' in text or 'gestation' in text:
+        return 'Pregnancy'
+    if 'fibroid' in text or 'ovarian cyst' in text or 'endometriosis' in text or 'uterus' in text:
+        return 'Gynecological'
+    if 'subfert' in text or 'infertile' in text or 'ivf' in text:
+        return 'Fertility'
+
+    # --- Neurological ---
+    if 'stroke' in text or 'infarct' in text or 'cva' in text or 'ischemia' in text:
+        return 'Stroke/Ischemia'
+    if 'hydrocephalus' in text or 'mening' in text or 'seizure' in text or 'brain' in text:
+        return 'Neuro'
+
+    # --- Cardiovascular ---
+    if 'myocardial' in text or 'heart' in text or 'cardiac' in text or 'aortic' in text:
+        return 'Cardiac'
+    if 'aneurysm' in text or 'thrombosis' in text or 'embol' in text or 'vascular' in text:
+        return 'Vascular'
+
+    # --- Gastrointestinal / Hepatic ---
+    if 'liver' in text or 'hepatic' in text or 'cirrhosis' in text or 'hepatitis' in text:
+        return 'Liver/Hepatic'
+    if 'appendicitis' in text or 'bowel' in text or 'colon' in text or 'intestin' in text:
+        return 'Gastrointestinal'
+    if 'gallbladder' in text or 'cholecyst' in text:
+        return 'Gallbladder'
+
+    # --- Respiratory ---
+    if 'pneumonia' in text or 'lung' in text or 'pleural' in text or 'bronch' in text:
+        return 'Respiratory'
+
+    # --- Musculoskeletal ---
+    if 'arthritis' in text or 'osteolysis' in text or 'joint' in text or 'muscle' in text:
+        return 'Musculoskeletal'
+
+    # --- Infection / Inflammation ---
+    if 'abscess' in text or 'infection' in text or 'sepsis' in text or 'inflamm' in text:
+        return 'Infectious/Inflammatory'
+
+    # --- Pediatric / Congenital ---
+    if 'congenital' in text or 'neonate' in text or 'infant' in text:
+        return 'Pediatric/Congenital'
+
+    # --- Endocrine / Metabolic ---
+    if 'thyroid' in text or 'diabetes' in text or 'adrenal' in text:
+        return 'Endocrine/Metabolic'
+
+    # --- Others ---
+    if 'lesion' in text or 'mass' in text or 'growth' in text:
+        return 'Mass/Lesion'
+    if 'post op' in text or 'postoperative' in text or 'follow up' in text:
+        return 'Post-Operative/Follow-up'
+
+    return 'Other'
+
+# ============================================================================
 # 5. HANDLE TEXT COLUMNS
 # ============================================================================
 
 def handle_text_columns(df, categorical_features, max_categories=1000):
-    """Handle or drop text columns like DIAGNOSIS and Remarks"""
+    """
+    Handle or drop text columns like IMPLANT, DIAGNOSIS, and IMPLANT.
+    - Applies categorize_implant() to IMPLANT.
+    - Applies categorize_diagnosis() to DIAGNOSIS.
+    - Drops or keeps Remarks depending on cardinality.
+    """
     print("\n=== HANDLING TEXT COLUMNS ===")
-    
-    text_cols = ['DIAGNOSIS', 'Remarks']
-    
+
+    text_cols = ['IMPLANT', 'DIAGNOSIS', 'Remarks']
+
     for col in text_cols:
         if col not in df.columns:
             continue
-        
+
         n_unique = df[col].nunique()
         print(f"  {col}: {n_unique} unique values")
-        
+
+        # --- Special handling: IMPLANT -------------------------------------
+        if col == 'IMPLANT':
+            print("    → Applying categorize_implant() function")
+            df[col] = df[col].apply(categorize_implant)
+            if col not in categorical_features:
+                categorical_features.append(col)
+            continue
+
+        # --- Special handling: DIAGNOSIS -----------------------------------
+        if col == 'DIAGNOSIS':
+            print("    → Applying categorize_diagnosis() function")
+            df[col] = df[col].apply(categorize_diagnosis)
+            if col not in categorical_features:
+                categorical_features.append(col)
+            continue
+
+        # --- Default handling: Remarks or others ----------------------------
         if n_unique > max_categories:
             print(f"    → Dropping (too many unique values)")
             df = df.drop(columns=[col])
@@ -213,7 +388,7 @@ def handle_text_columns(df, categorical_features, max_categories=1000):
             print(f"    → Keeping as categorical feature")
             if col not in categorical_features:
                 categorical_features.append(col)
-    
+
     return df, categorical_features
 
 # ============================================================================
@@ -245,7 +420,7 @@ def identify_feature_types(df, target, categorical_features):
 # 7. HANDLE OUTLIERS (OPTIONAL)
 # ============================================================================
 
-def handle_outliers(df, target, method='clip', iqr_multiplier=3.0):
+def handle_outliers(df, target, method='clip', iqr_multiplier=1.5):
     """
     Handle outliers in target variable
     
