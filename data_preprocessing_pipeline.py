@@ -6,17 +6,14 @@ Key Steps:
 1. Remove data leakage columns
 2. Handle datetime features
 3. Identify categorical vs numerical features
-4. Create train/test/validation splits
-5. Handle outliers (optional)
-6. Save preprocessed data in model-agnostic format
+4. Handle text columns and outliers
+5. Save single preprocessed dataset
 
-NOTE: Model-specific transformations (encoding, scaling, etc.) should be done
-in separate model-specific scripts.
+NOTE: Train/test split and random_state handling should be done in the respective ML model files.
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 import json
 import os
 import warnings
@@ -26,11 +23,8 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================================
 
-# Target variable - choose one:
-TARGET = "ACTUAL_SURGERY_DURATION"  # Main target: knife-to-skin → closure (minutes)
-# TARGET = "ACTUAL_USAGE_DURATION"  # Alternative: total OR time (minutes)
+TARGETS = ["ACTUAL_SURGERY_DURATION", "ACTUAL_USAGE_DURATION"]  # Both targets retained
 
-# Categorical features (will need encoding for most models except tree-based)
 CATEGORICAL_FEATURES = [
     'LOCATION', 'ROOM', 'CASE_STATUS', 'OPERATION_TYPE', 
     'EMERGENCY_PRIORITY', 'SURGICAL_CODE', 'DISCIPLINE', 
@@ -58,11 +52,7 @@ LEAKAGE_COLUMNS = [
     'EXIT_OR_DELAY', 'Is_Late', 'Reason_Is_Late',
     
     # Metadata
-    'actual_valid',
-    
-    # Alternative targets (if not using them)
-    'ACTUAL_USAGE_DURATION',  # Will be removed if TARGET is ACTUAL_SURGERY_DURATION
-    'ACTUAL_SURGERY_DURATION',  # Will be removed if TARGET is ACTUAL_USAGE_DURATION
+    'actual_valid'
 ]
 
 # ============================================================================
@@ -85,27 +75,14 @@ def load_cleaned_data(filepath):
 # 2. REMOVE DATA LEAKAGE
 # ============================================================================
 
-def remove_leakage_columns(df, target, leakage_cols):
-    """Remove columns that would leak information about the target"""
+def remove_leakage_columns(df, leakage_cols):
+    """Remove columns that would leak information about the targets"""
     print("\n=== REMOVING DATA LEAKAGE ===")
     
     # Check which leakage columns actually exist
     existing_leakage = [col for col in leakage_cols if col in df.columns]
-    
-    # Ensure target is not removed
-    if target in existing_leakage:
-        existing_leakage.remove(target)
-    
-    # Remove alternative target if not the main target
-    if target == 'ACTUAL_SURGERY_DURATION' and 'ACTUAL_USAGE_DURATION' in existing_leakage:
-        pass  # Already in leakage list
-    elif target == 'ACTUAL_USAGE_DURATION' and 'ACTUAL_SURGERY_DURATION' in existing_leakage:
-        pass  # Already in leakage list
-    
-    print(f"Removing {len(existing_leakage)} leakage columns:")
-    print(f"  {', '.join(existing_leakage[:5])}...")
-    
     df = df.drop(columns=existing_leakage)
+    print(f"✓ Removed {len(existing_leakage)} leakage columns")
     print(f"✓ Remaining columns: {len(df.columns)}")
     
     return df
@@ -188,7 +165,7 @@ def handle_high_cardinality(df, threshold=100, min_freq=10):
     return df
 
 # ============================================================================
-# 4a. CUSTOM FUNCTION TO CATEGORIZE IMPLANT COLUMN
+# 5a. CUSTOM FUNCTION TO CATEGORIZE IMPLANT COLUMN
 # ============================================================================
 
 def categorize_implant(text):
@@ -261,7 +238,7 @@ def categorize_implant(text):
     return "Other"
 
 # ============================================================================
-# 4b. CUSTOM FUNCTION TO CATEGORIZE DIAGNOSIS COLUMN
+# 5b. CUSTOM FUNCTION TO CATEGORIZE DIAGNOSIS COLUMN
 # ============================================================================
 
 def categorize_diagnosis(text):
@@ -417,7 +394,7 @@ def identify_feature_types(df, target, categorical_features):
     return all_features, cat_features, num_features
 
 # ============================================================================
-# 7. HANDLE OUTLIERS (OPTIONAL)
+# 7. HANDLE OUTLIERS
 # ============================================================================
 
 def handle_outliers(df, target, method='clip', iqr_multiplier=1.5):
@@ -467,41 +444,7 @@ def handle_outliers(df, target, method='clip', iqr_multiplier=1.5):
     return df
 
 # ============================================================================
-# 8. CREATE TRAIN/VAL/TEST SPLITS
-# ============================================================================
-
-def create_splits(df, target, test_size=0.2, val_size=0.1, random_state=42):
-    """
-    Create train/validation/test splits
-    
-    Returns: X_train, X_val, X_test, y_train, y_val, y_test
-    """
-    print("\n=== CREATING DATA SPLITS ===")
-    
-    # Separate features and target
-    X = df.drop(columns=[target])
-    y = df[target]
-    
-    # First split: train+val vs test
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-    
-    # Second split: train vs val
-    val_size_adjusted = val_size / (1 - test_size)  # adjust for remaining data
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=val_size_adjusted, random_state=random_state
-    )
-    
-    print(f"✓ Data splits created:")
-    print(f"  Train: {len(X_train)} rows ({len(X_train)/len(df)*100:.1f}%)")
-    print(f"  Val:   {len(X_val)} rows ({len(X_val)/len(df)*100:.1f}%)")
-    print(f"  Test:  {len(X_test)} rows ({len(X_test)/len(df)*100:.1f}%)")
-    
-    return X_train, X_val, X_test, y_train, y_val, y_test
-
-# ============================================================================
-# 9. DATA QUALITY CHECKS
+# 8. DATA QUALITY CHECKS
 # ============================================================================
 
 def perform_quality_checks(df, target):
@@ -542,237 +485,86 @@ def perform_quality_checks(df, target):
     return True
 
 # ============================================================================
-# 10. SAVE PREPROCESSED DATA
+# 9. SAVE PREPROCESSED DATA
 # ============================================================================
 
-def save_preprocessed_data(X_train, X_val, X_test, y_train, y_val, y_test, 
-                           cat_features, num_features, target, output_dir="preprocessed_data"):
-    """Save preprocessed data and metadata in model-agnostic format"""
+def save_preprocessed_data(df, cat_features, num_features, output_file="Proprocessed_Dataset.csv"):
     print("\n=== SAVING PREPROCESSED DATA ===")
-    
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Save splits as CSV (compatible with all models)
-    X_train.to_csv(f"{output_dir}/X_train.csv", index=False)
-    X_val.to_csv(f"{output_dir}/X_val.csv", index=False)
-    X_test.to_csv(f"{output_dir}/X_test.csv", index=False)
-    
-    y_train.to_csv(f"{output_dir}/y_train.csv", index=False, header=['target'])
-    y_val.to_csv(f"{output_dir}/y_val.csv", index=False, header=['target'])
-    y_test.to_csv(f"{output_dir}/y_test.csv", index=False, header=['target'])
-    
-    # Save metadata for model-specific scripts
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+    df.to_csv(output_file, index=False)
+    print(f"✓ Saved full preprocessed dataset (with both targets) to {output_file}")
     metadata = {
-        'target': target,
-        'n_train': len(X_train),
-        'n_val': len(X_val),
-        'n_test': len(X_test),
-        'n_features': len(X_train.columns),
+        'targets': TARGETS,
+        'n_rows': len(df),
+        'n_features': len(df.columns),
         'n_categorical': len(cat_features),
         'n_numerical': len(num_features),
         'categorical_features': cat_features,
-        'numerical_features': num_features,
-        'all_features': list(X_train.columns),
-        'target_stats': {
-            'mean': float(y_train.mean()),
-            'std': float(y_train.std()),
-            'min': float(y_train.min()),
-            'max': float(y_train.max())
-        }
+        'numerical_features': num_features
     }
-    
-    with open(f"{output_dir}/metadata.json", 'w') as f:
+    with open(output_file.replace(".csv", "_metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
-    
-    # Save feature types separately for easy loading
-    feature_types = pd.DataFrame({
-        'feature': list(X_train.columns),
-        'type': ['categorical' if col in cat_features else 'numerical' for col in X_train.columns]
-    })
-    feature_types.to_csv(f"{output_dir}/feature_types.csv", index=False)
-    
-    print(f"✓ Saved to {output_dir}/")
-    print(f"  Files created:")
-    print(f"    - X_train.csv, X_val.csv, X_test.csv")
-    print(f"    - y_train.csv, y_val.csv, y_test.csv")
-    print(f"    - metadata.json (feature info, stats)")
-    print(f"    - feature_types.csv (categorical vs numerical)")
+    print("✓ Metadata saved")
+    return metadata
 
 # ============================================================================
-# 11. MAIN PREPROCESSING PIPELINE
+# MAIN PIPELINE
 # ============================================================================
 
 def preprocess_for_ml(
     input_filepath,
-    target=TARGET,
     remove_outliers=True,
     outlier_method='clip',
-    test_size=0.2,
-    val_size=0.1,
-    random_state=42,
     save_data=True,
-    output_dir="preprocessed_data"
+    output_file="Preprocessed_Dataset.csv"
 ):
-    """
-    Complete preprocessing pipeline for general ML models
-    
-    Parameters:
-    - input_filepath: path to cleaned CSV
-    - target: target variable name
-    - remove_outliers: whether to handle outliers
-    - outlier_method: 'clip', 'remove', or 'keep'
-    - test_size: proportion for test set (default 0.2)
-    - val_size: proportion for validation set (default 0.1)
-    - random_state: random seed for reproducibility
-    - save_data: whether to save preprocessed data
-    - output_dir: directory to save preprocessed data
-    
-    Returns:
-    - Dictionary with all data and metadata
-    """
-    
-    # Step 1: Load data
     df = load_cleaned_data(input_filepath)
     
     # Step 2: Remove leakage
-    df = remove_leakage_columns(df, target, LEAKAGE_COLUMNS)
+    df = remove_leakage_columns(df, LEAKAGE_COLUMNS)
     
     # Step 3: Engineer datetime features
     df = engineer_datetime_features(df)
     
     # Step 4: Handle high cardinality
-    df = handle_high_cardinality(df)
+    # df = handle_high_cardinality(df)
     
-    # Step 5: Handle text columns
+    # Step 5: Handle text columns (and keep both targets in df)
     cat_features_copy = CATEGORICAL_FEATURES.copy()
     df, cat_features_copy = handle_text_columns(df, cat_features_copy)
-    
-    # Step 6: Identify feature types
-    all_features, cat_features, num_features = identify_feature_types(
-        df, target, cat_features_copy
-    )
-    
-    # Step 7: Quality checks
-    perform_quality_checks(df, target)
-    
-    # Step 8: Handle outliers
+    all_features, cat_features, num_features = identify_feature_types(df, None, cat_features_copy)
+    perform_quality_checks(df, TARGETS[0])
+
     if remove_outliers:
-        df = handle_outliers(df, target, method=outlier_method)
-    
-    # Step 9: Create splits
-    X_train, X_val, X_test, y_train, y_val, y_test = create_splits(
-        df, target, test_size=test_size, val_size=val_size, random_state=random_state
-    )
-    
-    # Step 10: Save data
+        for t in TARGETS:
+            if t in df.columns:
+                df = handle_outliers(df, t, method=outlier_method)
+
     if save_data:
-        save_preprocessed_data(
-            X_train, X_val, X_test, y_train, y_val, y_test,
-            cat_features, num_features, target, output_dir
-        )
-    
-    # Summary
+        metadata = save_preprocessed_data(df, cat_features, num_features, output_file)
+    else:
+        metadata = None
+
     print("\n" + "=" * 70)
     print("PREPROCESSING COMPLETE")
     print("=" * 70)
-    print(f"✓ Ready for ML modeling!")
-    print(f"✓ Target: {target}")
+    print(f"✓ Dataset ready for ML model script.")
+    print(f"✓ Output file: {output_file}")
+    print(f"✓ Targets retained: {', '.join(TARGETS)}")
     print(f"✓ Features: {len(all_features)} ({len(cat_features)} categorical, {len(num_features)} numerical)")
-    print(f"✓ Train/Val/Test: {len(X_train)}/{len(X_val)}/{len(X_test)}")
-    print(f"\nNext steps:")
-    print(f"  1. Load data from '{output_dir}/' folder")
-    print(f"  2. Apply model-specific preprocessing (encoding, scaling, etc.)")
-    print(f"  3. Train your model!")
-    
-    # Return everything for programmatic use
-    return {
-        'X_train': X_train,
-        'X_val': X_val,
-        'X_test': X_test,
-        'y_train': y_train,
-        'y_val': y_val,
-        'y_test': y_test,
-        'categorical_features': cat_features,
-        'numerical_features': num_features,
-        'all_features': all_features,
-        'target': target,
-        'output_dir': output_dir
-    }
+    return df, metadata
 
 # ============================================================================
-# 12. HELPER FUNCTION TO LOAD PREPROCESSED DATA
-# ============================================================================
-
-def load_preprocessed_data(data_dir="preprocessed_data"):
-    """
-    Load preprocessed data for model training
-    
-    Returns: Dictionary with all data and metadata
-    """
-    print(f"Loading preprocessed data from {data_dir}/...")
-    
-    # Load splits
-    X_train = pd.read_csv(f"{data_dir}/X_train.csv")
-    X_val = pd.read_csv(f"{data_dir}/X_val.csv")
-    X_test = pd.read_csv(f"{data_dir}/X_test.csv")
-    
-    y_train = pd.read_csv(f"{data_dir}/y_train.csv")['target']
-    y_val = pd.read_csv(f"{data_dir}/y_val.csv")['target']
-    y_test = pd.read_csv(f"{data_dir}/y_test.csv")['target']
-    
-    # Load metadata
-    with open(f"{data_dir}/metadata.json", 'r') as f:
-        metadata = json.load(f)
-    
-    # Load feature types
-    feature_types = pd.read_csv(f"{data_dir}/feature_types.csv")
-    
-    print(f"✓ Loaded {len(X_train)} train, {len(X_val)} val, {len(X_test)} test samples")
-    print(f"✓ Target: {metadata['target']}")
-    print(f"✓ Features: {metadata['n_features']}")
-    
-    return {
-        'X_train': X_train,
-        'X_val': X_val,
-        'X_test': X_test,
-        'y_train': y_train,
-        'y_val': y_val,
-        'y_test': y_test,
-        'metadata': metadata,
-        'feature_types': feature_types,
-        'categorical_features': metadata['categorical_features'],
-        'numerical_features': metadata['numerical_features']
-    }
-
-# ============================================================================
-# 13. USAGE EXAMPLE
+# USAGE EXAMPLE
 # ============================================================================
 
 if __name__ == "__main__":
-    # Configuration
-    INPUT_FILE = "/Users/nigelcmc/Downloads/Final_Cleaned_Dataset_OPTIC_7.csv"
-    OUTPUT_DIR = "Proprocessed_Dataset.csv"
-    
-    # Run preprocessing pipeline
-    results = preprocess_for_ml(
+    INPUT_FILE = "Final_Cleaned_Dataset_OPTIC_7.csv"
+    OUTPUT_FILE = "Proprocessed_Dataset.csv"
+    preprocess_for_ml(
         input_filepath=INPUT_FILE,
-        target="ACTUAL_SURGERY_DURATION",  # or "ACTUAL_USAGE_DURATION"
         remove_outliers=True,
-        outlier_method='clip',  # 'clip', 'remove', or 'keep'
-        test_size=0.2,
-        val_size=0.1,
-        random_state=42,
+        outlier_method='clip',
         save_data=True,
-        output_dir=OUTPUT_DIR
+        output_file=OUTPUT_FILE
     )
-    
-    print("\n" + "=" * 70)
-    print("✓ Preprocessing complete!")
-    print("=" * 70)
-    print("\nData saved to:", OUTPUT_DIR)
-    print("\nTo load for model training:")
-    print(f"  data = load_preprocessed_data('{OUTPUT_DIR}')")
-    print(f"  X_train = data['X_train']")
-    print(f"  y_train = data['y_train']")
-    print("  # Apply model-specific preprocessing, then train!")
