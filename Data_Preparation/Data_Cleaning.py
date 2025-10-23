@@ -9,10 +9,13 @@ Expected runtime: 2-5 minutes (down from 8-15 minutes)
 Author: [Your Name]
 Date: [Date]
 """
-
+from typing import NamedTuple, Optional
+import argparse
+import os
 import pandas as pd
 import numpy as np
 import re
+import sys
 import string
 import unicodedata
 import difflib
@@ -34,9 +37,78 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-INPUT_FILE = "/Users/joshlim/Documents/GitHub/BT4103-OPTIC/Data/Standardized_Raw_Dataset.csv"
-OUTPUT_FILE = "/Users/joshlim/Documents/GitHub/BT4103-OPTIC/Data/Cleaned_Dataset.csv"
-NATURE_LEGEND_FILE = "Legends/nature_legend.csv"
+#INPUT_FILE = "/Users/joshlim/Documents/GitHub/BT4103-OPTIC/Data/Standardized_Raw_Dataset.csv"
+#OUTPUT_FILE = "/Users/joshlim/Documents/GitHub/BT4103-OPTIC/Data/Cleaned_Dataset.csv"
+#NATURE_LEGEND_FILE = "Legends/nature_legend.csv"
+
+class ParsedArgs(NamedTuple):
+    input_path: str
+    output_path: str
+    legend_path: Optional[str]
+
+def _parse_args() -> ParsedArgs:
+    p = argparse.ArgumentParser(
+        description="Advanced cleaning + feature engineering (CLI). "
+                    "Usage: Data_Cleaning_CLI.py <input> [output] [legend] "
+                    "or use flags: -i/--input, -o/--output, -l/--legend"
+    )
+
+    # Positional args (optional except input)
+    p.add_argument("input_pos", nargs="?", help="Input file (.csv, .gz, .parquet, .xlsx, .xls)")
+    p.add_argument("output_pos", nargs="?", default=None, help="Output file (csv/parquet)")
+    p.add_argument("legend_pos", nargs="?", default=None, help="Legend CSV path")
+
+    # Optional flags (can override positionals)
+    p.add_argument("-i", "--input", dest="input_opt", help="Input file path")
+    p.add_argument("-o", "--output", dest="output_opt", help="Output file path (csv/parquet)")
+    p.add_argument("-l", "--legend", dest="legend_opt", help="Legend CSV path")
+
+    args = p.parse_args()
+
+    input_path = args.input_opt or args.input_pos
+    if not input_path:
+        p.error("No input file provided. Provide <input> positionally or via -i/--input.")
+
+    output_path = args.output_opt or args.output_pos or "cleaned_output.csv"
+    legend_path = args.legend_opt or args.legend_pos or (os.path.splitext(output_path)[0] + "_legend.csv")
+
+    return ParsedArgs(input_path=input_path, output_path=output_path, legend_path=legend_path)
+# -------------------------------
+# File I/O Helpers
+# -------------------------------
+
+def read_input_file(path: str) -> pd.DataFrame:
+    """Read CSV, GZ, Parquet, XLSX, or XLS into a DataFrame."""
+    ext = os.path.splitext(path)[1].lower()
+    print(f"[Cleaner] Detected file extension: {ext}")
+
+    if ext == ".csv":
+        return pd.read_csv(path, low_memory=False)
+    elif ext == ".gz":
+        return pd.read_csv(path, compression="gzip", low_memory=False)
+    elif ext == ".parquet":
+        return pd.read_parquet(path)
+    elif ext in [".xlsx", ".xls"]:
+        return pd.read_excel(path)
+    else:
+        raise ValueError(f"Unsupported file format: {ext}")
+
+
+def save_output_file(df: pd.DataFrame, path: str):
+    """Save DataFrame to CSV or Parquet depending on extension."""
+    ext = os.path.splitext(path)[1].lower()
+    dirpath = os.path.dirname(path)
+    if dirpath:  # Only create dirs if path includes a directory
+        os.makedirs(dirpath, exist_ok=True)
+
+    if ext == ".csv":
+        df.to_csv(path, index=False)
+    elif ext == ".parquet":
+        df.to_parquet(path, index=False)
+    else:
+        df.to_csv(path, index=False)
+
+    print(f"[Cleaner] Saved cleaned file to: {path}")
 
 # Performance settings
 USE_SPACY = False  # Set to True for better text normalization (slower)
@@ -669,6 +741,12 @@ def convert_to_correct_dtypes(data):
 # ============================================================================
 
 def main():
+    args = _parse_args()
+    INPUT_PATH = args.input_path
+    OUTPUT_PATH = args.output_path
+    NATURE_LEGEND_FILE = args.legend_path
+    ...
+
     import time
     start_time = time.time()
     
@@ -686,9 +764,8 @@ def main():
     print("STEP 1: LOADING DATA")
     print("=" * 80)
     step_start = time.time()
-    
-    data = pd.read_csv(INPUT_FILE)
-    print(f"✓ Loaded {len(data):,} rows from {INPUT_FILE}")
+    data = read_input_file(INPUT_PATH)
+    print(f"✓ Loaded {len(data):,} rows from {INPUT_PATH}")
     
     # Parse datetime columns
     for col in PLANNED_COLS + ACTUAL_COLS:
@@ -1005,9 +1082,8 @@ def main():
     print("STEP 15: SAVE FINAL DATASET")
     print("=" * 80)
     step_start = time.time()
-    
-    data.to_csv(OUTPUT_FILE, index=False)
-    print(f"✓ Saved {len(data):,} rows to {OUTPUT_FILE}")
+    save_output_file(data, OUTPUT_PATH)
+    print(f"✓ Saved {len(data):,} rows to {OUTPUT_PATH}")
     print(f"⏱  Step completed in {time.time() - step_start:.1f}s")
     
     # ========================================================================
@@ -1015,7 +1091,7 @@ def main():
     print("\n" + "=" * 80)
     print("ADVANCED CLEANING COMPLETE")
     print("=" * 80)
-    print(f"Output file: {OUTPUT_FILE}")
+    print(f"Output file: {OUTPUT_PATH}")
     print(f"Legend file: {NATURE_LEGEND_FILE}")
     print(f"Final row count: {len(data):,}")
     print(f"Final column count: {len(data.columns)}")
