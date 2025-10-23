@@ -12,7 +12,7 @@ import streamlit as st
 from datetime import timedelta
 from config import DARK_THEME_CSS, COLS
 from data_loader import (
-    preprocess_upload,
+    preprocess_upload_with_progress,
     load_and_filter_data_from_df,
     FileTooLargeError,
     UnsupportedFileTypeError,
@@ -69,29 +69,48 @@ sig = _file_sig(uploaded_file)
 needs_clean = st.session_state.get("clean_sig") != sig
 
 if needs_clean:
-    with st.spinner("Cleaning your data..."):
+    with st.spinner("Cleaning your data..."):   
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         try:
-            cleaned_df, downloads, clean_logs = preprocess_upload(uploaded_file)
+            cleaned_df, downloads, clean_logs = preprocess_upload_with_progress(uploaded_file,progress_bar=progress_bar,
+            status_text=status_text)
         except FileTooLargeError as e:
-            st.error("Cleaning failed"); st.markdown(f"- File is too large ({e}). Max allowed is 2 GB."); st.stop()
+            progress_bar.empty()
+            status_text.empty()
+            st.error("Cleaning failed")
+            st.markdown(f"- File is too large ({e}). Max allowed is 2 GB.")
+            st.stop()
         except UnsupportedFileTypeError as e:
-            st.error("Cleaning failed"); st.markdown(f"- Unsupported file type `{e}`. Allowed: csv, gz, parquet, xlsx, xls."); st.stop()
+            progress_bar.empty()
+            status_text.empty()
+            st.error("Cleaning failed")
+            st.markdown(f"- Unsupported file type `{e}`. Allowed: csv, gz, parquet, xlsx, xls.")
+            st.stop()
         except (SchemaMismatchError, CleaningFailedError) as e:
-            st.error("Cleaning failed"); st.markdown(
-                "- Columns may not match the cleaning script’s expected schema\n"
+            progress_bar.empty()
+            status_text.empty()
+            st.error("Cleaning failed")
+            st.markdown(
+                "- Columns may not match the cleaning script's expected schema\n"
                 "- Or an internal error occurred in the cleaning step\n\n"
                 f"**Detail:** {type(e).__name__}: {e}"
-            ); st.stop()
+            )
+            st.stop()
         except Exception as e:
-            st.error("Cleaning failed"); st.markdown(f"- Unexpected error during cleaning\n\n**Detail:** {type(e).__name__}: {e}"); st.stop()
+            progress_bar.empty()
+            status_text.empty()
+            st.error("Cleaning failed")
+            st.markdown(f"- Unexpected error during cleaning\n\n**Detail:** {type(e).__name__}: {e}")
+            st.stop()
 
-        # persist results so future reruns / widget interactions DON’T re-clean
+        # persist results so future reruns / widget interactions DON'T re-clean
         st.session_state["clean_sig"] = sig
         st.session_state["cleaned_df"] = cleaned_df
         st.session_state["downloads_csv"] = downloads["csv"]
         st.session_state["downloads_parquet"] = downloads["parquet"]
 
-        st.success(f"Cleaning successful — rows: {len(cleaned_df):,} • columns: {len(cleaned_df.columns):,}")
+        st.success(f"✅ Cleaning successful — rows: {len(cleaned_df):,} • columns: {len(cleaned_df.columns):,}")
 
 # ---------- downloads never trigger cleaning ----------
 c1, c2 = st.columns(2)

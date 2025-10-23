@@ -15,7 +15,7 @@ if PROJECT_ROOT not in sys.path:
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Callable, Tuple, Optional
 # ---- load Data_Preparation/Data_Cleaning.py by file path ----
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLEANER_FILE = os.path.join(PROJECT_ROOT, "Data_Preparation", "Data_Cleaning.py")
@@ -64,40 +64,38 @@ def _drop_unnecessary_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def _parse_known_datetimes(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce all known time columns to datetimes (errors → NaT)."""
-    out = df.copy()
     for col in list(PLANNED_COLS) + list(ACTUAL_COLS):
-        if col in out.columns:
-            out[col] = pd.to_datetime(out[col], errors="coerce")
-    return out
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
 
 
 def _create_feature_variables(df: pd.DataFrame) -> pd.DataFrame:
     """Create duration/delay features and convert timedeltas to minutes."""
-    out = df.copy()
 
     # Surgery duration (knife → closure)
-    if "ACTUAL_SKIN_CLOSURE" in out.columns and "ACTUAL_KNIFE_TO_SKIN_TIME" in out.columns:
-        out["ACTUAL_SURGERY_DURATION"] = out["ACTUAL_SKIN_CLOSURE"] - out["ACTUAL_KNIFE_TO_SKIN_TIME"]
-    if "PLANNED_SKIN_CLOSURE" in out.columns and "PLANNED_KNIFE_TO_SKIN_TIME" in out.columns:
-        out["PLANNED_SURGERY_DURATION"] = out["PLANNED_SKIN_CLOSURE"] - out["PLANNED_KNIFE_TO_SKIN_TIME"]
-    if "ACTUAL_SURGERY_DURATION" in out.columns and "PLANNED_SURGERY_DURATION" in out.columns:
-        out["DIFF_SURGERY_DURATION"] = out["ACTUAL_SURGERY_DURATION"] - out["PLANNED_SURGERY_DURATION"]
+    if "ACTUAL_SKIN_CLOSURE" in df.columns and "ACTUAL_KNIFE_TO_SKIN_TIME" in df.columns:
+        df["ACTUAL_SURGERY_DURATION"] = df["ACTUAL_SKIN_CLOSURE"] - df["ACTUAL_KNIFE_TO_SKIN_TIME"]
+    if "PLANNED_SKIN_CLOSURE" in df.columns and "PLANNED_KNIFE_TO_SKIN_TIME" in df.columns:
+        df["PLANNED_SURGERY_DURATION"] = df["PLANNED_SKIN_CLOSURE"] - df["PLANNED_KNIFE_TO_SKIN_TIME"]
+    if "ACTUAL_SURGERY_DURATION" in df.columns and "PLANNED_SURGERY_DURATION" in df.columns:
+        df["DIFF_SURGERY_DURATION"] = df["ACTUAL_SURGERY_DURATION"] - df["PLANNED_SURGERY_DURATION"]
 
     # OR usage duration (enter OR → exit OR)
-    if "ACTUAL_EXIT_OR_TIME" in out.columns and "ACTUAL_ENTER_OR_TIME" in out.columns:
-        out["ACTUAL_USAGE_DURATION"] = out["ACTUAL_EXIT_OR_TIME"] - out["ACTUAL_ENTER_OR_TIME"]
-    if "PLANNED_EXIT_OR_TIME" in out.columns and "PLANNED_ENTER_OR_TIME" in out.columns:
-        out["PLANNED_USAGE_DURATION"] = out["PLANNED_EXIT_OR_TIME"] - out["PLANNED_ENTER_OR_TIME"]
-    if "ACTUAL_USAGE_DURATION" in out.columns and "PLANNED_USAGE_DURATION" in out.columns:
-        out["DIFF_USAGE_DURATION"] = out["ACTUAL_USAGE_DURATION"] - out["PLANNED_USAGE_DURATION"]
+    if "ACTUAL_EXIT_OR_TIME" in df.columns and "ACTUAL_ENTER_OR_TIME" in df.columns:
+        df["ACTUAL_USAGE_DURATION"] = df["ACTUAL_EXIT_OR_TIME"] - df["ACTUAL_ENTER_OR_TIME"]
+    if "PLANNED_EXIT_OR_TIME" in df.columns and "PLANNED_ENTER_OR_TIME" in df.columns:
+        df["PLANNED_USAGE_DURATION"] = df["PLANNED_EXIT_OR_TIME"] - df["PLANNED_ENTER_OR_TIME"]
+    if "ACTUAL_USAGE_DURATION" in df.columns and "PLANNED_USAGE_DURATION" in df.columns:
+        df["DIFF_USAGE_DURATION"] = df["ACTUAL_USAGE_DURATION"] - df["PLANNED_USAGE_DURATION"]
 
     # Start delays
-    if "ACTUAL_ENTER_OR_TIME" in out.columns and "PLANNED_ENTER_OR_TIME" in out.columns:
-        out["ENTER_START_DELAY"] = out["ACTUAL_ENTER_OR_TIME"] - out["PLANNED_ENTER_OR_TIME"]
-    if "ACTUAL_KNIFE_TO_SKIN_TIME" in out.columns and "PLANNED_KNIFE_TO_SKIN_TIME" in out.columns:
-        out["KNIFE_START_DELAY"] = out["ACTUAL_KNIFE_TO_SKIN_TIME"] - out["PLANNED_KNIFE_TO_SKIN_TIME"]
-    if "ACTUAL_EXIT_OR_TIME" in out.columns and "PLANNED_EXIT_OR_TIME" in out.columns:
-        out["EXIT_OR_DELAY"] = out["ACTUAL_EXIT_OR_TIME"] - out["PLANNED_EXIT_OR_TIME"]
+    if "ACTUAL_ENTER_OR_TIME" in df.columns and "PLANNED_ENTER_OR_TIME" in df.columns:
+        df["ENTER_START_DELAY"] = df["ACTUAL_ENTER_OR_TIME"] - df["PLANNED_ENTER_OR_TIME"]
+    if "ACTUAL_KNIFE_TO_SKIN_TIME" in df.columns and "PLANNED_KNIFE_TO_SKIN_TIME" in df.columns:
+        df["KNIFE_START_DELAY"] = df["ACTUAL_KNIFE_TO_SKIN_TIME"] - df["PLANNED_KNIFE_TO_SKIN_TIME"]
+    if "ACTUAL_EXIT_OR_TIME" in df.columns and "PLANNED_EXIT_OR_TIME" in df.columns:
+        df["EXIT_OR_DELAY"] = df["ACTUAL_EXIT_OR_TIME"] - df["PLANNED_EXIT_OR_TIME"]
 
     # Convert timedelta features to minutes
     td_cols = [
@@ -106,10 +104,10 @@ def _create_feature_variables(df: pd.DataFrame) -> pd.DataFrame:
         "ENTER_START_DELAY", "KNIFE_START_DELAY", "EXIT_OR_DELAY",
     ]
     for c in td_cols:
-        if c in out.columns:
-            out[c] = out[c].dt.total_seconds() / 60.0
+        if c in df.columns:
+            df[c] = df[c].dt.total_seconds() / 60.0
 
-    return out
+    return df
 
 
 def _remove_out_of_scope_and_dupes(df: pd.DataFrame) -> pd.DataFrame:
@@ -138,22 +136,39 @@ def _drop_missing_critical(df: pd.DataFrame) -> pd.DataFrame:
 def clean_in_memory(
     df_in: pd.DataFrame,
     *,
-    save_legend_path: Optional[str] = None
+    save_legend_path: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, str], None]] = None
 ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     """
-    Run the full cleaning pipeline in memory (no printing, no I/O).
-    Returns (cleaned_df, legend_df_or_None).
-    If save_legend_path is provided, the legend CSV is also written to that path.
+    Run the full cleaning pipeline in memory with progress tracking.
+    
+    Args:
+        df_in: Input DataFrame
+        save_legend_path: Optional path to save operation legend
+        progress_callback: Optional callback function(step_num, step_name) for progress updates
+        
+    Returns:
+        (cleaned_df, legend_df_or_None)
     """
+    TOTAL_STEPS = 13
+    
+    def update_progress(step: int, message: str):
+        """Helper to update progress if callback provided"""
+        if progress_callback:
+            progress_callback(step, message)
+    
     data = df_in.copy()
 
-    # 1) Parse datetimes early (only known time columns)
+    # Step 1: Parse datetimes
+    update_progress(1, "Parsing datetime columns...")
     data = _parse_known_datetimes(data)
 
-    # 2) Drop unnecessary cols
+    # Step 2: Drop unnecessary columns
+    update_progress(2, "Removing unnecessary columns...")
     data = _drop_unnecessary_columns(data)
 
-    # 3) Build operation legend; drop 'NATURE'
+    # Step 3: Build operation legend
+    update_progress(3, "Building operation legend...")
     legend_df: Optional[pd.DataFrame] = None
     if "NATURE" in data.columns and "SURGICAL_CODE" in data.columns:
         data, legend_df = build_operation_legend(data, code_col="SURGICAL_CODE", nature_col="NATURE")
@@ -161,7 +176,8 @@ def clean_in_memory(
             os.makedirs(os.path.dirname(save_legend_path) or ".", exist_ok=True)
             legend_df.to_csv(save_legend_path, index=False)
 
-    # 4) Clean text columns where available
+    # Step 4: Clean text columns
+    update_progress(4, "Cleaning text columns (equipment, implant, diagnosis)...")
     if "EQUIPMENT" in data.columns:
         data = clean_equipment_vectorized(data, col="EQUIPMENT")
     if "IMPLANT" in data.columns:
@@ -169,7 +185,8 @@ def clean_in_memory(
     if "DIAGNOSIS" in data.columns:
         data = clean_diagnosis_vectorized(data, col="DIAGNOSIS")
 
-    # 5) Planned timeline: enforce ordering + impute from knife/closure
+    # Step 5: Planned timeline imputation
+    update_progress(5, "Imputing planned timeline...")
     col_pairs = [
         ("PLANNED_KNIFE_TO_SKIN_TIME", "PLANNED_SKIN_CLOSURE"),
         ("PLANNED_SKIN_CLOSURE", "PLANNED_PATIENT_REVERSAL_TIME"),
@@ -180,43 +197,46 @@ def clean_in_memory(
     data = enforce_ordering_vectorized(data, col_pairs)
     data = impute_planned_from_knife_vectorized(data)
 
-    # 6) Actual timeline: impute fetch + impute using statistical marks
+    # Step 6: Actual timeline imputation
+    update_progress(6, "Imputing actual timeline...")
     data = impute_patient_fetch_time_vectorized(data)
     marks = compute_statistical_marks(data)
     data = impute_induction_prep_reversal_cleanup_vectorized(data, marks)
 
-    # 7) Validate timelines and filter invalid rows
-    # Validate non-decreasing order (vectorized)
+    # Step 7: Validate timeline ordering
+    update_progress(7, "Validating timeline ordering...")
     planned_valid_order = validate_datetime_order_vectorized(data, PLANNED_COLS)
     actual_valid_order = validate_datetime_order_vectorized(data, ACTUAL_COLS)
-    
     order_valid_mask = planned_valid_order & actual_valid_order
     num_invalid_order = (~order_valid_mask).sum()
     data = data[order_valid_mask].copy()
-    print(f"✓ Removed {num_invalid_order:,} rows with non-decreasing validation failures")
 
-    # Validate duration (72 hours max) (vectorized)
+    # Step 8: Validate duration limits
+    update_progress(8, "Validating duration limits (72h max)...")
     planned_valid_duration = validate_duration_vectorized(data, PLANNED_COLS, max_hours=72)
     actual_valid_duration = validate_duration_vectorized(data, ACTUAL_COLS, max_hours=72)
-    
     duration_valid_mask = planned_valid_duration & actual_valid_duration
     num_invalid_duration = (~duration_valid_mask).sum()
     data = data[duration_valid_mask].copy()
-    print(f"✓ Removed {num_invalid_duration:,} rows exceeding 72-hour duration")
 
-    # 8) Scope & duplicates
+    # Step 9: Remove out-of-scope and duplicates
+    update_progress(9, "Removing out-of-scope records and duplicates...")
     data = _remove_out_of_scope_and_dupes(data)
 
-    # 9) Delay reason taxonomy + late flags
+    # Step 10: Process delay reasons
+    update_progress(10, "Processing delay reasons and classifications...")
     data = process_delay_reasons_vectorized(data)
 
-    # 10) Features (minutes)
+    # Step 11: Create feature variables
+    update_progress(11, "Creating feature variables (durations, delays)...")
     data = _create_feature_variables(data)
 
-    # 11) Drop rows with missing critical fields (only those present)
+    # Step 12: Drop rows with missing critical data
+    update_progress(12, "Removing rows with missing critical data...")
     data = _drop_missing_critical(data)
 
-    # 12) Final dtype normalization
+    # Step 13: Convert to correct data types
+    update_progress(13, "Converting to correct data types...")
     data = convert_to_correct_dtypes(data)
 
     return data, legend_df

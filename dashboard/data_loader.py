@@ -192,6 +192,62 @@ def preprocess_upload(uploaded_file):
     # You can also expose legend_df for download if you want.
     return cleaned_df, downloads, ""  # logs omitted intentionally
 
+# Preprocess_upload with progress tracking
+def preprocess_upload_with_progress(uploaded_file, progress_bar=None, status_text=None):
+    """
+    Enhanced version with progress tracking for Streamlit UI.
+    
+    Args:
+        uploaded_file: Streamlit uploaded file object
+        progress_bar: Streamlit progress bar widget (optional)
+        status_text: Streamlit text widget for status messages (optional)
+        
+    Returns:
+        (cleaned_df, downloads, logs)
+    """
+    TOTAL_STEPS = 13
+    
+    # Update status helper
+    def update_status(step: int, message: str):
+        if progress_bar:
+            progress = step / TOTAL_STEPS
+            progress_bar.progress(progress)
+        if status_text:
+            status_text.text(f"Step {step}/{TOTAL_STEPS}: {message}")
+    
+    # Step 0: Validation
+    update_status(0, "Validating uploaded file...")
+    validate_upload(uploaded_file)
+    
+    # Step 0.5: Reading file
+    update_status(0, "Reading uploaded file...")
+    raw_df = normalize_upload_to_df(uploaded_file)
+    
+    # Create progress callback for cleaning
+    def progress_callback(step: int, message: str):
+        update_status(step, message)
+    
+    # Run cleaning with progress updates
+    cleaned_df, legend_df = clean_in_memory(
+        raw_df,
+        progress_callback=progress_callback
+    )
+    
+    # Final validation
+    update_status(TOTAL_STEPS, "Finalizing and validating schema...")
+    required = [v for v in COLS.values() if isinstance(v, str)]
+    if required:
+        validate_cleaned_schema(cleaned_df, required)
+
+    # Prepare downloads
+    update_status(TOTAL_STEPS, "Preparing download files...")
+    downloads = {
+        "csv": _df_to_csv_buf(cleaned_df),
+        "parquet": _df_to_parquet_buf(cleaned_df),
+    }
+    
+    return cleaned_df, downloads, ""
+
 @st.cache_data(show_spinner=False)
 def load_data_sample(file_bytes: bytes, name: str, n_rows: int = 50000):
     """Load sample for filter building"""
