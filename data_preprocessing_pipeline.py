@@ -26,24 +26,29 @@ warnings.filterwarnings('ignore')
 TARGETS = ["ACTUAL_SURGERY_DURATION", "ACTUAL_USAGE_DURATION"]  # Both targets retained
 
 CATEGORICAL_FEATURES = [
-    'LOCATION', 'ROOM', 'CASE_STATUS', 'OPERATION_TYPE', 
-    'EMERGENCY_PRIORITY', 'SURGICAL_CODE', 'DISCIPLINE', 
-    'SURGEON', 'ANAESTHETIST_TEAM', 'ANAESTHETIST_MCR_NO',
+    'ROOM', 'CASE_STATUS', 'OPERATION_TYPE', 
+    'EMERGENCY_PRIORITY',
+    'DISCIPLINE', 
+    'SURGEON', 'ANAESTHETIST_TEAM',
+    'ANAESTHETIST_MCR_NO',
     'ANESTHESIA', 'EQUIPMENT', 'ADMISSION_STATUS', 
     'ADMISSION_CLASS_TYPE', 'ADMISSION_TYPE', 'ADMISSION_WARD',
     'AOH', 'BLOOD', 'IMPLANT', 'CANCER_INDICATOR', 
     'TRAUMA_INDICATOR', 'planned_valid', 'Delay_Category'
 ]
 
-# Data leakage columns - these reveal the target!
+# Columns we wish to exclude
 LEAKAGE_COLUMNS = [
-    # All ACTUAL columns (except target)
+    # All ACTUAL columns reveal the target (except target)
     'ACTUAL_RECEPTION_IN_TIME', 'ACTUAL_ENTER_OR_TIME',
     'ACTUAL_ANAESTHESIA_INDUCTION', 'ACTUAL_SURGERY_PREP_TIME',
     'ACTUAL_KNIFE_TO_SKIN_TIME', 'ACTUAL_SKIN_CLOSURE',
     'ACTUAL_PATIENT_REVERSAL_TIME', 'ACTUAL_EXIT_OR_TIME',
     'ACTUAL_EXIT_RECOVERY_TIME', 'ACTUAL_OR_CLEANUP_TIME',
     
+    # Planned columns (since we are predicting duration, we assume planned times are unknown)
+    'PLANNED_SURGERY_DURATION', 'PLANNED_USAGE_DURATION',
+
     # DIFF columns (calculated from actuals)
     'DIFF_SURGERY_DURATION', 'DIFF_USAGE_DURATION',
     
@@ -52,7 +57,21 @@ LEAKAGE_COLUMNS = [
     'EXIT_OR_DELAY', 'Is_Late', 'Reason_Is_Late',
     
     # Metadata
-    'actual_valid'
+    'actual_valid',
+
+    # Multicollinearity issues (removed based on correlation analysis)
+    'ANAESTHETIST_TEAM', # (Relationship note:
+        # TEAM is finer-grained than MCR_NO — each Head Anaesthetist (MCR_NO) can lead multiple teams,
+        # as their assisting staff may differ across surgeries. However, since the Head Anaesthetist’s
+        # availability directly influences surgery timing and scheduling (affecting early/late durations
+        # and slot assignments), MCR_NO is selected as the key feature for modelling, rather than TEAM.
+        # )
+    'LOCATION', # (our EDA informed us that ROOM is a finer-grained attribute of LOCATION. In other words, One-to-many (1 → N) relationship between ROOM and LOCATION.)
+    
+    # High cardinality / overfitting concerns
+    'SURGICAL_CODE',
+    'PATIENT_CODE',
+    'Remarks'
 ]
 
 # ============================================================================
@@ -144,8 +163,8 @@ def handle_high_cardinality(df, threshold=100, min_freq=10):
     """Group rare categories in high-cardinality features"""
     print("\n=== HANDLING HIGH CARDINALITY ===")
     
-    high_card_cols = ['PATIENT_CODE', 'ADMISSION_BED', 'SURGEON', 
-                      'SURGICAL_CODE', 'ANAESTHETIST_MCR_NO', 'EQUIPMENT']
+    high_card_cols = ['ADMISSION_BED', 'SURGEON', 
+                      'ANAESTHETIST_MCR_NO']
     
     for col in high_card_cols:
         if col not in df.columns:
@@ -165,77 +184,191 @@ def handle_high_cardinality(df, threshold=100, min_freq=10):
     return df
 
 # ============================================================================
+# 4b. DEFINE CUSTOM TRANSFORMERS
+# ============================================================================
+
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import MultiLabelBinarizer
+
+class EquipmentTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, min_count=8):
+        self.min_count = min_count
+
+    def fit(self, X, y=None):
+        # Step 1: Split and flatten
+        all_equipment = X['EQUIPMENT'].fillna('').apply(self._split_equipment)
+        flattened = [item for sublist in all_equipment for item in sublist if item != '0']
+
+        # Step 2: Count occurrences
+        counts = pd.Series(flattened).value_counts()
+
+        # Step 3: Keep only equipment appearing >= min_count times
+        self.common_equipment = set(counts[counts >= self.min_count].index)
+        self.common_equipment.add("others")
+        return self
+
+    def transform(self, X):
+        transformed = []
+        for val in X['EQUIPMENT'].fillna(''):
+            items = self._split_equipment(val)
+
+            # If '0' or empty → no equipment at all
+            if not items or items == ['0']:
+                transformed.append([])  # No active equipment
+                continue
+
+            # Replace rare ones with "others"
+            items = [
+                item if item in self.common_equipment else "others"
+                for item in items
+            ]
+            transformed.append(items)
+
+        # One-hot encode only the retained categories
+        mlb = MultiLabelBinarizer(sparse_output=True)
+        mlb.fit([list(self.common_equipment)])
+        self.mlb = mlb
+        return mlb.transform(transformed)
+
+    def _split_equipment(self, val):
+        return [item.strip().lower() for item in str(val).split(';') if item.strip()]
+
+# ============================================================================
 # 5a. CUSTOM FUNCTION TO CATEGORIZE IMPLANT COLUMN
 # ============================================================================
 
 def categorize_implant(text):
-    if pd.isna(text) or str(text).strip() == "" or str(text).lower() == "0":
-        return "Unknown"
-    text = str(text).lower()
+    import pandas as pd
 
-    # Orthopedic & Spine
-    if any(k in text for k in ["screw", "plate", "rod", "arthrex", "zimmer", "synthes", "bone"]):
-        return "Orthopedic"
-    if any(k in text for k in ["solera", "spine", "cage", "medtronic", "pedicle"]):
-        return "Spine Surgery"
-    
-    # Neurosurgery
-    if any(k in text for k in ["neuro", "cranial", "burr", "crani", "mesh"]):
-        return "Neurosurgery"
-    
-    # ENT
-    if any(k in text for k in ["eustachian", "sinus", "trache", "balloon", "ear", "nose", "throat"]):
-        return "ENT"
-    
-    # Ophthalmology
-    if any(k in text for k in ["lens", "cataract", "eye", "vitrectomy"]):
-        return "Ophthalmology"
-    
-    # Dental / Maxillofacial
-    if any(k in text for k in ["mandible", "maxilla", "dental", "tooth", "oral", "implant"]):
-        return "Dental / Maxillofacial"
-    
-    # Cardiac / Vascular
-    if any(k in text for k in ["stent", "valve", "graft", "aorta", "cardiac"]):
-        return "Cardiac / Vascular"
-    
-    # Urology
-    if any(k in text for k in ["catheter", "stent", "nephro", "ureter", "urine"]):
-        return "Urology"
-    
-    # Gynecology / Obstetrics
-    if any(k in text for k in ["hysterec", "uterus", "pregnan", "ovary"]):
-        return "Gynecology / Obstetrics"
-    
-    # Laparoscopic / General Surgery
-    if any(k in text for k in ["lapar", "trocar", "port", "camera"]):
-        return "Laparoscopic / General Surgery"
-    
-    # Upper Limb
-    if any(k in text for k in ["shoulder", "elbow", "hand", "radius", "ulna"]):
-        return "Orthopedic – Upper Limb"
-    
-    # Lower Limb
-    if any(k in text for k in ["knee", "hip", "femur", "tibia", "ankle"]):
-        return "Orthopedic – Lower Limb"
-    
-    # Plastic / Reconstructive
-    if any(k in text for k in ["flap", "graft", "reconstruct"]):
-        return "Plastic / Reconstructive"
-    
-    # Endoscopy Equipment
-    if any(k in text for k in ["scope", "endosc", "camera", "light source"]):
-        return "Endoscopy Equipment"
-    
-    # Power Tools / Instruments
-    if any(k in text for k in ["drill", "burr", "saw", "cutter"]):
-        return "Power Tools / Instruments"
-    
-    # Vendor / Logistics
-    if any(k in text for k in ["tray", "set", "vendor", "system", "standby"]):
-        return "Vendor / Logistics"
-    
-    return "Other"
+    if pd.isna(text):
+        return 'Unknown'
+
+    text = str(text).lower().strip()
+
+    # === Orthopaedic Implants & Prostheses ===
+    if any(k in text for k in [
+        'implant', 'plate', 'screw', 'rod', 'nail', 'cage', 'spacer', 'stem', 
+        'tibial', 'femur', 'hip', 'knee', 'ankle', 'shoulder', 'spine', 
+        'clavicle', 'radius', 'tibia', 'humerus', 'fixator', 'locking', 'prosthesis'
+    ]):
+        return 'Orthopaedic Implants & Prostheses'
+
+    # === Surgical Instruments & Tools ===
+    elif any(k in text for k in [
+        'drill', 'saw', 'reamer', 'driver', 'screwdriver', 'clamp', 'cutter',
+        'scalpel', 'forcep', 'plier', 'rongeur', 'retractor', 'guide',
+        'tray', 'instrument', 'handpiece', 'shaver', 'osteotome', 'probe', 'suction'
+    ]):
+        return 'Surgical Instruments & Tools'
+
+    # === Sutures & Soft Tissue Fixation ===
+    elif any(k in text for k in [
+        'suture', 'anchor', 'fastfix', 'fibrewire', 'biosuture', 'juggerknot',
+        'ethibond', 'prolene', 'biosure', 'labral', 'tendon', 'ligament'
+    ]):
+        return 'Sutures & Soft Tissue Fixation'
+
+    # === Neurosurgical / Spine Devices ===
+    elif any(k in text for k in [
+        'neuro', 'neuromonitoring', 'spinal', 'spine', 'nuvasive', 'cortical',
+        'cervical', 'lumbar', 'thoracic', 'bone graft', 'graft', 'fusion'
+    ]):
+        return 'Neurosurgical / Spine Devices'
+
+    # === Cardiovascular / Valve / Vascular Devices ===
+    elif any(k in text for k in [
+        'stent', 'valve', 'pacemaker', 'catheter', 'shunt', 'balloon', 'wire',
+        'vascular', 'arterial', 'venous'
+    ]):
+        return 'Cardiovascular / Valve / Vascular Devices'
+
+    # === Visualization / Imaging Equipment ===
+    elif any(k in text for k in [
+        'camera', 'microscope', 'endoscope', 'arthroscope', 'laparoscope',
+        'scope', 'navigation', 'monitor', 'intensifier', 'system', 'imaging', 'ultrasound'
+    ]):
+        return 'Visualization / Imaging Equipment'
+
+    # === Power Systems & Machines ===
+    elif any(k in text for k in [
+        'power', 'machine', 'equipment', 'powertool', 'harmonic', 'ligasure', 'coblator',
+        'ultrasonic', 'thunderbeat'
+    ]):
+        return 'Power Systems & Machines'
+
+    # === Surgical Sets / Trays / Kits ===
+    elif any(k in text for k in [
+        'set', 'kit', 'modular', 'consignment', 'universal', 'tools', 'tray'
+    ]):
+        return 'Surgical Sets / Trays / Kits'
+
+    # === Biomaterials / Bone Substitutes ===
+    elif any(k in text for k in [
+        'cement', 'floseal', 'collagen', 'bone', 'allograft', 'synvisc',
+        'oxinium', 'syntellix', 'biodesign', 'palacos'
+    ]):
+        return 'Biomaterials / Bone Substitutes'
+
+    # === Wound Care / Dressing / Drainage ===
+    elif any(k in text for k in [
+        'vac', 'dressing', 'drain', 'renasys', 'aquamantys', 'prp',
+        'phenol', 'paraffin', 'wound'
+    ]):
+        return 'Wound Care / Dressing / Drainage'
+
+    # === Dental / Maxillofacial / Craniofacial ===
+    elif any(k in text for k in [
+        'dental', 'orthognathic', 'cranioplasty', 'max', 'facial', 'jaw', 'orthofix'
+    ]):
+        return 'Dental / Maxillofacial / Craniofacial'
+
+    # === Injection / Biologicals ===
+    elif any(k in text for k in [
+        'prp', 'triamcinolone', 'injection', 'stem', 'plasma', 'platelet'
+    ]):
+        return 'Injection / Biologicals'
+
+    # === Brands & Manufacturers ===
+    elif any(k in text for k in [
+        'arthrex', 'stryker', 'zimmer', 'depuy', 'smith', 'nephew', 'medtronic',
+        'synthes', 'biomet', 'nuvasive', 'medartis', 'globus', 'syntes', 
+        'oxford', 'exeter', 'persona', 'tomofix', 'triathlon', 'vanguard', 'solera', 'colibri'
+    ]):
+        return 'Brands & Manufacturers'
+
+    # === Consumables / Disposables ===
+    elif any(k in text for k in [
+        'needle', 'syringe', 'catheter', 'tube', 'mesh', 'bag', 'bottle', 'filter'
+    ]):
+        return 'Consumables / Disposables'
+
+    # === Surgical Furniture & Accessories ===
+    elif any(k in text for k in [
+        'table', 'trolley', 'chair', 'stand', 'holder', 'arm', 'frame', 'traction'
+    ]):
+        return 'Surgical Furniture & Accessories'
+
+    # === Patient / Anatomy Reference ===
+    elif any(k in text for k in [
+        'anterior', 'posterior', 'medial', 'lateral', 'proximal', 'distal', 
+        'tibial', 'femur', 'hip', 'knee', 'hand', 'wrist', 'shoulder', 'elbow'
+    ]):
+        return 'Patient / Anatomy Reference'
+
+    # === Navigation / Robotics / Computer-Assisted ===
+    elif any(k in text for k in [
+        'navigation', 'robotic', 'stealth', 'carto', 'navio', '3d', 'positioning'
+    ]):
+        return 'Navigation / Robotics / Computer-Assisted'
+
+    # === Fixation / Support / External Devices ===
+    elif any(k in text for k in [
+        'brace', 'splint', 'external', 'traction', 'orthosis', 'cast', 'bandage'
+    ]):
+        return 'Fixation / Support / External Devices'
+
+    else:
+        return 'Other'
 
 # ============================================================================
 # 5b. CUSTOM FUNCTION TO CATEGORIZE DIAGNOSIS COLUMN
@@ -247,90 +380,168 @@ def categorize_diagnosis(text):
 
     text = str(text).lower().strip()
 
-    # --- Oncological ---
-    if 'cancer' in text or 'carcinoma' in text or 'malignant' in text or 'tumor' in text or 'ca ' in text:
-        return 'Cancer'
+    # === Category logic ===
+    if any(k in text for k in [
+        'cataract', 'glaucoma', 'retina', 'retinal', 'pterygium', 'vitrectomy',
+        'macular', 'entropion', 'ptosis', 'pseudophakia', 'eye', 'cornea',
+        'exotropia', 'esotropia', 'strabismus'
+    ]):
+        return 'Ophthalmology'
 
-    # --- Urological / Renal ---
-    if 'stone' in text or 'nephrolith' in text or 'urolith' in text:
-        return 'Gallstone/Kidney Stone'
-    if 'hydronephrosis' in text or 'renal' in text or 'kidney' in text:
-        return 'Renal/Urological'
+    elif any(k in text for k in [
+        'fracture', 'dislocation', 'osteoporosis', 'arthritis', 'osteoarthritis',
+        'scoliosis', 'ligament', 'tendon', 'meniscus', 'rotator', 'clavicle',
+        'femur', 'tibia', 'humerus', 'joint', 'bone', 'spine', 'shoulder',
+        'knee', 'hip', 'ankle', 'wrist', 'back', 'limb', 'elbow', 'hand', 'foot'
+    ]):
+        return 'Musculoskeletal / Orthopaedic'
 
-    # --- Trauma / Injury ---
-    if 'fracture' in text or 'rupture' in text or 'tear' in text or 'injury' in text or 'trauma' in text:
-        return 'Trauma'
+    elif any(k in text for k in [
+        'coronary', 'artery', 'atrial', 'mitral', 'ischemic', 'fibrillation',
+        'tachycardia', 'bradycardia', 'aneurysm', 'angina', 'pacemaker',
+        'aortic', 'valve', 'vascular', 'venous', 'varicose', 'regurgitation',
+        'myocardial', 'cardiac', 'heart'
+    ]):
+        return 'Cardiac / Vascular'
 
-    # --- Obstetric / Gynecologic ---
-    if 'pregnancy' in text or 'gravid' in text or 'gestation' in text:
-        return 'Pregnancy'
-    if 'fibroid' in text or 'ovarian cyst' in text or 'endometriosis' in text or 'uterus' in text:
-        return 'Gynecological'
-    if 'subfert' in text or 'infertile' in text or 'ivf' in text:
-        return 'Fertility'
+    elif any(k in text for k in [
+        'pneumonia', 'empyema', 'pleural', 'lung', 'pneumothorax', 'rhinitis',
+        'sinusitis', 'asthma', 'bronchitis', 'apnea', 'snoring', 'stridor',
+        'nasal', 'sinus', 'epistaxis'
+    ]):
+        return 'Respiratory / Thoracic'
 
-    # --- Neurological ---
-    if 'stroke' in text or 'infarct' in text or 'cva' in text or 'ischemia' in text:
-        return 'Stroke/Ischemia'
-    if 'hydrocephalus' in text or 'mening' in text or 'seizure' in text or 'brain' in text:
-        return 'Neuro'
+    elif any(k in text for k in [
+        'appendicitis', 'cholecystitis', 'cholelithiasis', 'cholangitis',
+        'gallstones', 'gallbladder', 'biliary', 'liver', 'hepatitis',
+        'esophageal', 'gastritis', 'ulcer', 'colitis', 'pancreatitis', 'hernia',
+        'constipation', 'bowel', 'rectal', 'intestinal', 'abdominal', 'abdomen'
+    ]):
+        return 'Gastrointestinal / Hepatic'
 
-    # --- Cardiovascular ---
-    if 'myocardial' in text or 'heart' in text or 'cardiac' in text or 'aortic' in text:
-        return 'Cardiac'
-    if 'aneurysm' in text or 'thrombosis' in text or 'embol' in text or 'vascular' in text:
-        return 'Vascular'
+    elif any(k in text for k in [
+        'anemia', 'lymphoma', 'leukemia', 'myeloma', 'lymphadenopathy',
+        'pancytopenia', 'bleed', 'hematemesis', 'coagulopathy', 'thrombosed'
+    ]):
+        return 'Haematological / Lymphatic'
 
-    # --- Gastrointestinal / Hepatic ---
-    if 'liver' in text or 'hepatic' in text or 'cirrhosis' in text or 'hepatitis' in text:
-        return 'Liver/Hepatic'
-    if 'appendicitis' in text or 'bowel' in text or 'colon' in text or 'intestin' in text:
-        return 'Gastrointestinal'
-    if 'gallbladder' in text or 'cholecyst' in text:
-        return 'Gallbladder'
+    elif any(k in text for k in [
+        'carcinoma', 'adenocarcinoma', 'sarcoma', 'tumour', 'cancer',
+        'neoplasm', 'malignant', 'benign', 'metastasis', 'lesion', 'polyp',
+        'mass', 'nodule', 'growth'
+    ]):
+        return 'Oncology (Tumour)'
 
-    # --- Respiratory ---
-    if 'pneumonia' in text or 'lung' in text or 'pleural' in text or 'bronch' in text:
-        return 'Respiratory'
+    elif any(k in text for k in [
+        'renal', 'kidney', 'ureter', 'ureteric', 'bladder', 'urethral',
+        'hydronephrosis', 'nephritis', 'pyelonephritis', 'urinary', 'incontinence'
+    ]):
+        return 'Renal / Urinary'
 
-    # --- Musculoskeletal ---
-    if 'arthritis' in text or 'osteolysis' in text or 'joint' in text or 'muscle' in text:
-        return 'Musculoskeletal'
+    elif any(k in text for k in [
+        'fibroid', 'fibroids', 'ovarian', 'ovary', 'uterine', 'endometrial',
+        'endometriosis', 'subfertility', 'pregnancy', 'abortion', 'miscarriage',
+        'breech', 'ectopic', 'cervical', 'uterus', 'menorrhagia', 'menopausal', 'pmb'
+    ]):
+        return 'Reproductive / Gynaecological'
 
-    # --- Infection / Inflammation ---
-    if 'abscess' in text or 'infection' in text or 'sepsis' in text or 'inflamm' in text:
-        return 'Infectious/Inflammatory'
+    elif any(k in text for k in [
+        'caesarean', 'lscs', 'twins', 'breech', 'delivery', 'labour', 'fetal',
+        'placenta', 'postpartum', 'rpoc'
+    ]):
+        return 'Obstetric / Perinatal'
 
-    # --- Pediatric / Congenital ---
-    if 'congenital' in text or 'neonate' in text or 'infant' in text:
-        return 'Pediatric/Congenital'
+    elif any(k in text for k in [
+        'abscess', 'ulcer', 'cellulitis', 'lipoma', 'sebaceous', 'carbuncle',
+        'keloid', 'cyst', 'lesion', 'wound', 'scar', 'infection', 'dermoid',
+        'melanoma', 'gangrene'
+    ]):
+        return 'Dermatological / Skin'
 
-    # --- Endocrine / Metabolic ---
-    if 'thyroid' in text or 'diabetes' in text or 'adrenal' in text:
-        return 'Endocrine/Metabolic'
+    elif any(k in text for k in [
+        'infection', 'sepsis', 'osteomyelitis', 'cellulitis', 'hepatitis',
+        'tb', 'pneumonia', 'cholangitis', 'tonsillitis', 'sinusitis'
+    ]):
+        return 'Infectious Disease'
 
-    # --- Others ---
-    if 'lesion' in text or 'mass' in text or 'growth' in text:
-        return 'Mass/Lesion'
-    if 'post op' in text or 'postoperative' in text or 'follow up' in text:
-        return 'Post-Operative/Follow-up'
+    elif any(k in text for k in [
+        'diabetes', 'thyroid', 'goiter', 'obesity', 'parathyroid',
+        'hyperparathyroidism', 'adrenal', 'pituitary', 'metabolic'
+    ]):
+        return 'Endocrine / Metabolic'
 
-    return 'Other'
+    elif any(k in text for k in [
+        'stroke', 'subdural', 'hydrocephalus', 'meningioma', 'hematoma',
+        'glioblastoma', 'neuropathy', 'syncope', 'cerebral', 'nerve', 'myelopathy',
+        'spinal', 'epilepsy'
+    ]):
+        return 'Neurological / Neurosurgical'
+
+    elif any(k in text for k in [
+        'depression', 'bipolar', 'schizophrenia', 'psychosis', 'schizoaffective',
+        'anxiety', 'catatonia', 'psychotic', 'mdd'
+    ]):
+        return 'Psychiatric / Mental Health'
+
+    elif any(k in text for k in [
+        'otitis', 'tonsillitis', 'sinusitis', 'rhinitis', 'hearing', 'tonsil',
+        'nasopharyngeal', 'adenoid', 'parotid', 'epistaxis', 'cholesteatoma',
+        'ear', 'pinna', 'uvp', 'snoring'
+    ]):
+        return 'ENT (Ear, Nose, Throat)'
+
+    elif any(k in text for k in [
+        'dental', 'caries', 'tooth', 'teeth', 'oral', 'jaw', 'mandible',
+        'maxillary', 'parotid', 'facial', 'tongue', 'buccal', 'lip', 'cleft'
+    ]):
+        return 'Dental / Maxillofacial'
+
+    elif any(k in text for k in [
+        'phimosis', 'circumcision', 'penile', 'hydrocele', 'prostate', 'testis',
+        'scrotal', 'varicocele', 'epididymis', 'urethral', 'azoospermia'
+    ]):
+        return 'Urological / Male Reproductive'
+
+    elif any(k in text for k in [
+        'laceration', 'injury', 'trauma', 'crush', 'amputation', 'stab',
+        'burn', 'scar', 'wound', 'ulcer', 'traumatic'
+    ]):
+        return 'Trauma / Injury'
+
+    elif any(k in text for k in [
+        'congenital', 'atresia', 'cleft', 'hypospadias', 'syndrome',
+        'malformation', 'anomaly', 'hydrocephalus'
+    ]):
+        return 'Congenital / Developmental'
+
+    elif any(k in text for k in [
+        'arthritis', 'spondylitis', 'lupus', 'vasculitis', 'dermatitis',
+        'autoimmune', 'rheumatic'
+    ]):
+        return 'Autoimmune / Inflammatory'
+
+    elif any(k in text for k in [
+        'screening', 'biopsy', 'repair', 'excision', 'amputation', 'debridement',
+        'closure', 'intubation', 'transplant', 'investigation', 'revision', 'drainage'
+    ]):
+        return 'Procedural / Post-Surgical'
+
+    else:
+        return 'Other / Unclassified'
 
 # ============================================================================
 # 5. HANDLE TEXT COLUMNS
 # ============================================================================
 
-def handle_text_columns(df, categorical_features, max_categories=1000):
+def handle_text_columns(df, categorical_features):
     """
     Handle or drop text columns like IMPLANT, DIAGNOSIS, and IMPLANT.
     - Applies categorize_implant() to IMPLANT.
     - Applies categorize_diagnosis() to DIAGNOSIS.
-    - Drops or keeps Remarks depending on cardinality.
     """
     print("\n=== HANDLING TEXT COLUMNS ===")
 
-    text_cols = ['IMPLANT', 'DIAGNOSIS', 'Remarks']
+    text_cols = ['IMPLANT', 'DIAGNOSIS']
 
     for col in text_cols:
         if col not in df.columns:
@@ -355,17 +566,6 @@ def handle_text_columns(df, categorical_features, max_categories=1000):
                 categorical_features.append(col)
             continue
 
-        # --- Default handling: Remarks or others ----------------------------
-        if n_unique > max_categories:
-            print(f"    → Dropping (too many unique values)")
-            df = df.drop(columns=[col])
-            if col in categorical_features:
-                categorical_features.remove(col)
-        else:
-            print(f"    → Keeping as categorical feature")
-            if col not in categorical_features:
-                categorical_features.append(col)
-
     return df, categorical_features
 
 # ============================================================================
@@ -386,10 +586,16 @@ def identify_feature_types(df, target, categorical_features):
     num_features = [col for col in all_features if col not in cat_features]
     
     print(f"✓ Total features: {len(all_features)}")
+    
     print(f"  - Categorical: {len(cat_features)}")
-    print(f"    Examples: {cat_features[:3]}")
+    # print(f"    Examples: {cat_features[:3]}")
+    result = ', '.join(cat_features)
+    print(result)
+    
     print(f"  - Numerical: {len(num_features)}")
-    print(f"    Examples: {num_features[:3]}")
+    # print(f"    Examples: {num_features[:3]}")
+    result = ', '.join(num_features)
+    print(result)
     
     return all_features, cat_features, num_features
 
@@ -397,13 +603,12 @@ def identify_feature_types(df, target, categorical_features):
 # 7. HANDLE OUTLIERS
 # ============================================================================
 
-def handle_outliers(df, target, method='clip', iqr_multiplier=1.5):
+def handle_outliers(df, target, method='remove'):
     """
     Handle outliers in target variable
     
     Parameters:
     - method: 'clip' (cap values), 'remove' (drop rows), or 'keep' (no action)
-    - iqr_multiplier: how many IQRs away to consider outlier
     """
     print("\n=== HANDLING OUTLIERS ===")
     
@@ -411,19 +616,11 @@ def handle_outliers(df, target, method='clip', iqr_multiplier=1.5):
         print("Skipping outlier handling (keeping all data)")
         return df
     
-    # Calculate outlier bounds using IQR method
-    Q1 = df[target].quantile(0.25)
-    Q3 = df[target].quantile(0.75)
-    IQR = Q3 - Q1
-    
-    lower_bound = Q1 - iqr_multiplier * IQR
-    upper_bound = Q3 + iqr_multiplier * IQR
-    
-    # Don't allow negative lower bound for duration
-    lower_bound = max(0, lower_bound)
+    # Don't allow negative lower bound for duration + cap surgey/usage at 24 hours
+    lower_bound = 5
+    upper_bound = 1440
     
     print(f"Target: {target}")
-    print(f"  Q1: {Q1:.1f}, Q3: {Q3:.1f}, IQR: {IQR:.1f}")
     print(f"  Outlier bounds: [{lower_bound:.1f}, {upper_bound:.1f}]")
     
     # Count outliers
@@ -532,8 +729,24 @@ def preprocess_for_ml(
     # Step 5: Handle text columns (and keep both targets in df)
     cat_features_copy = CATEGORICAL_FEATURES.copy()
     df, cat_features_copy = handle_text_columns(df, cat_features_copy)
+    
+    # Step 5b: Apply custom transformers for multi-valued categorical fields
+    print("\n=== APPLYING CUSTOM TRANSFORMERS ===")
+
+    if 'EQUIPMENT' in df.columns:
+        print("→ Expanding EQUIPMENT into one-hot encoded columns (≥8 threshold, no explicit 'No Additional Equipment')")
+        equip_trans = EquipmentTransformer(min_count=8).fit(df)
+        equip_matrix = equip_trans.transform(df)
+        equip_df = pd.DataFrame.sparse.from_spmatrix(
+            equip_matrix,
+            index=df.index,
+            columns=[f"EQUIPMENT_{c.title().replace(' ', '_')}" for c in equip_trans.mlb.classes_]
+        )
+        df = pd.concat([df.drop(columns=['EQUIPMENT']), equip_df], axis=1)
+
     all_features, cat_features, num_features = identify_feature_types(df, None, cat_features_copy)
     perform_quality_checks(df, TARGETS[0])
+    perform_quality_checks(df, TARGETS[1])
 
     if remove_outliers:
         for t in TARGETS:
@@ -564,7 +777,7 @@ if __name__ == "__main__":
     preprocess_for_ml(
         input_filepath=INPUT_FILE,
         remove_outliers=True,
-        outlier_method='clip',
+        outlier_method='remove',
         save_data=True,
         output_file=OUTPUT_FILE
     )
