@@ -69,7 +69,6 @@ LEAKAGE_COLUMNS = [
     'LOCATION', # (our EDA informed us that ROOM is a finer-grained attribute of LOCATION. In other words, One-to-many (1 → N) relationship between ROOM and LOCATION.)
     
     # High cardinality / overfitting concerns
-    'SURGICAL_CODE',
     'PATIENT_CODE',
     'Remarks'
 ]
@@ -722,9 +721,21 @@ def preprocess_for_ml(
     
     # Step 3: Engineer datetime features
     df = engineer_datetime_features(df)
-    
+
+    # Step 3b: Create "number of operations conducted" feature
+    print("\n=== CALCULATING NUMBER OF OPERATIONS CONDUCTED ===")
+    if 'SURGICAL_CODE' in df.columns:
+        df['num_operations_conducted'] = (
+            df['SURGICAL_CODE']
+            .fillna('')
+            .apply(lambda x: len([s for s in str(x).split(';') if s.strip()]))
+        )
+        print("✓ Added column: num_operations_conducted")
+    else:
+        print("⚠ SURGICAL_CODE column not found — skipping operation count feature.")
+
     # Step 4: Handle high cardinality
-    # df = handle_high_cardinality(df)
+    df = handle_high_cardinality(df)
     
     # Step 5: Handle text columns (and keep both targets in df)
     cat_features_copy = CATEGORICAL_FEATURES.copy()
