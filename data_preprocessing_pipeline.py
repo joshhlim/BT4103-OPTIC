@@ -734,6 +734,20 @@ def preprocess_for_ml(
     else:
         print("⚠ SURGICAL_CODE column not found — skipping operation count feature.")
 
+    # Step 3c: Keep only the first surgical code
+    print("\n=== CLEANING SURGICAL_CODE COLUMN ===")
+    if 'SURGICAL_CODE' in df.columns:
+        df['SURGICAL_CODE'] = (
+            df['SURGICAL_CODE']
+            .astype(str)
+            .str.split(';')
+            .str[0]
+            .str.strip()
+        )
+        print("✓ Retained only the first code in SURGICAL_CODE")
+    else:
+        print("⚠ SURGICAL_CODE column not found — skipping cleanup")
+
     # Step 4: Handle high cardinality
     df = handle_high_cardinality(df)
     
@@ -763,6 +777,39 @@ def preprocess_for_ml(
         for t in TARGETS:
             if t in df.columns:
                 df = handle_outliers(df, t, method=outlier_method)
+
+    # ========================================================================
+    # ADD SURGEON / OPERATION-TYPE MEDIAN STATISTICS
+    # ========================================================================
+    print("\n=== ADDING SURGEON AND OPERATION-TYPE MEDIAN STATISTICS ===")
+
+    # --- Median surgery and usage durations per SURGEON ---
+    if {'SURGEON', 'ACTUAL_SURGERY_DURATION', 'ACTUAL_USAGE_DURATION'}.issubset(df.columns):
+        surgeon_stats = (
+            df.groupby('SURGEON')
+              .agg(
+                  SURGEON_MEDIAN_SURGERY=('ACTUAL_SURGERY_DURATION', 'median'),
+                  SURGEON_MEDIAN_USAGE=('ACTUAL_USAGE_DURATION', 'median'),
+                  SURGEON_MEDIAN_CONFIDENCE=('SURGEON', 'count')
+              )
+              .reset_index()
+        )
+        df = df.merge(surgeon_stats, on='SURGEON', how='left')
+        print(f"✓ Added surgeon-level median statistics for {len(surgeon_stats)} surgeons")
+
+    # --- Median surgery and usage durations per OPERATION_TYPE ---
+    if {'OPERATION_TYPE', 'ACTUAL_SURGERY_DURATION', 'ACTUAL_USAGE_DURATION'}.issubset(df.columns):
+        procedure_stats = (
+            df.groupby('OPERATION_TYPE')
+              .agg(
+                  OPERATION_TYPE_MEDIAN_SURGERY=('ACTUAL_SURGERY_DURATION', 'median'),
+                  OPERATION_TYPE_MEDIAN_USAGE=('ACTUAL_USAGE_DURATION', 'median'),
+                  OPERATION_TYPE_MEDIAN_CONFIDENCE=('OPERATION_TYPE', 'count')
+              )
+              .reset_index()
+        )
+        df = df.merge(procedure_stats, on='OPERATION_TYPE', how='left')
+        print(f"✓ Added operation-type-level median statistics for {len(procedure_stats)} procedures")              
 
     if save_data:
         metadata = save_preprocessed_data(df, cat_features, num_features, output_file)
