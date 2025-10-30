@@ -6,7 +6,7 @@ This guide walks through setting up a reproducible Python environment for the BT
 
 - `Data_Preparation/`: raw standardisation and advanced cleaning pipelines.
 - `data_preprocessing_pipeline.py`: reusable ML preprocessing pipeline that exports model-ready CSVs and metadata.
-- `dashboard/`: Streamlit application for operating theatre analytics (uses Plotly for visuals).
+- `dashboard/`: Streamlit application for operating theatre analytics, data cleaning and prediction model (uses Plotly for visuals).
 - `Models/`: exploratory modelling scripts and notebooks (scikit-learn, CatBoost, XGBoost, etc.).
 
 ## 1. Prerequisites
@@ -66,7 +66,7 @@ pip install \
 
 ### Optional Extras
 
-- `catboost`, `xgboost`, `lightgbm`: required only for specific notebooks or experiments.
+- `catboost`, `xgboost`, `lightgbm`: required only for predictive model notebooks.
 - `spacy` and the `en_core_web_sm` model: enable advanced text normalisation in `Data_Cleaning.py` when `USE_SPACY = True`.
 - `jupyterlab` or `notebook`: for running the `.ipynb` files under `Models/`.
 
@@ -80,22 +80,22 @@ python -m spacy download en_core_web_sm
 ## 5. Prepare Input Data
 
 1. Create a `Data/` folder at the repo root if it does not exist.
-2. Copy the raw exports into:
+2. Copy the raw data from client database into the folder as csv files:
    - `Data/Raw_Dataset.csv`
    - `Data/Validation_Dataset.csv`
    - Supporting legends (e.g., `Data/Legends/nature_legend.csv`), if available.
-3. Adjust the `INPUT_FILE`, `OUTPUT_FILE`, and related constants at the top of:
+3. Adjust the `INPUT_FILE`, `OUTPUT_FILE`, and set related constants at the top of:
    - `Data_Preparation/Raw_Data_Standardization.py`
    - `Data_Preparation/Data_Cleaning.py`
    - `data_preprocessing_pipeline.py`
 
-The sample paths in the scripts point to a macOS user directory; replace them with relative paths (e.g., `"Data/Raw_Dataset.csv"`) to avoid hard-coded user names.
+Replace file paths with relative paths (e.g., `"Data/Raw_Dataset.csv"`) to avoid hard-coded user names.
 
 ## 6. Run the Data Pipelines
 
 > All commands assume your virtual environment is active and the working directory is the repository root.
 
-1. **Standardise historical raw data** (one-time step):
+1. **Standardise historical raw data** (one-time step for 2017 to 2022 data only):
 
    ```bash
    python Data_Preparation/Raw_Data_Standardization.py
@@ -104,6 +104,7 @@ The sample paths in the scripts point to a macOS user directory; replace them wi
    - Input: `Data/Raw_Dataset.csv`
    - Output: `Data/Standardized_Raw_Dataset.csv`
    - Optional: install `tqdm` to enable progress bars (Already included in the core dependencies above).
+   - Note: this is a one-time use file for the given data (2017 to 2022). If new data (eg 2023 onwards) is given, DO NOT RUN THIS STANDARDIZATION FILE. Users will have to create their own Raw_Data_Standardization.py file that is customized to their new data. 
 
 2. **Advanced cleaning and feature engineering**:
 
@@ -114,15 +115,18 @@ The sample paths in the scripts point to a macOS user directory; replace them wi
    - Input: `Data/Standardized_Raw_Dataset.csv`
    - Output: `Data/Cleaned_Dataset.csv` (adjust the filename if desired).
    - Review warnings about missing reference files (e.g., legends) and ensure they exist.
+   - Note: this script is automatically run by the Dashboard upon uploading your Standardized_Raw_Dataset.csv to the Dashboard. Just click download for the Cleaned_Dataset.csv. 
 
-3. **Model-ready preprocessing**:
+3. **Preprocessing data for Model Use**:
 
    ```bash
    python data_preprocessing_pipeline.py
    ```
 
-   - Update `INPUT_FILE` and `OUTPUT_FILE` inside the script to point to the cleaned dataset (e.g., `"Data/Cleaned_Dataset.csv"`).
-   - Produces `Preprocessed_Dataset.csv` plus `Preprocessed_Dataset_metadata.json`.
+   - Update `INPUT_FILE` and `OUTPUT_FILE` inside the script to point to the cleaned dataset (e.g., `"Data/Cleaned_Dataset.csv"` for input).
+   - Outputs `Preprocessed_Dataset.csv` plus `Preprocessed_Dataset_metadata.json`.
+   - This script pre-processes Cleaned_Dataset.csv into clear variables that can be used for feature engineering and training the predictive model.
+   - Note: Data Visualisation on the Dashboard does not depend on this pre-processing step.
 
 4. **Model experimentation (optional)**:
    ```bash
@@ -131,9 +135,9 @@ The sample paths in the scripts point to a macOS user directory; replace them wi
    - Expects `Final_Cleaned_Dataset_OPTIC_7.csv` (or adjust the filename).
    - Installs of `scikit-learn`, `numpy`, `pandas` are already handled; add `catboost`/`xgboost` if running other notebooks.
 
-## 7. Launch the Streamlit Dashboard (Localhost)
+## 7. Launch the Streamlit Dashboard (Localhost, not deployed)
 
-Place the dataset you want to visualise in an accessible location. Then run:
+Run:
 
 ```bash
 streamlit run dashboard/app.py
@@ -150,8 +154,8 @@ streamlit run dashboard/app.py
   2. **Pick the reporting period**: adjust any date or time sliders to focus on a relevant window (e.g., a specific quarter).
   3. **Configure filters**: narrow down by specialties, surgeons, procedure codes, or theatre IDs to drill into the data that matters most.
   4. **Explore the tabs**:
-     - The overview tab surfaces key KPIs such as utilisation rate, turnover time, and average case duration.
-     - Subsequent tabs break down schedule adherence, bottleneck analysis, and predictive insights if the model outputs are present.
+     - The overview tab generates key KPIs such as on-time rate, planning accuracy, median surgery duration and number of rooms utilised.
+     - Subsequent tabs break down lateness rate, planning accuracy, utilisation rate and median surgery duration by categorical lateness reasons if the data is present and valid.
   5. **Download insights**: use the export/download button (where available) to capture filtered tables for reporting.
 - The app caches results for faster iteration; re-upload if you need to refresh with a different dataset.
 - If you encounter module import errors, double-check that the virtual environment is activated and the dependencies in Step 4 are installed.
