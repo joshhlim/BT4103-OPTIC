@@ -825,7 +825,7 @@ def preprocess_for_ml(
 
 if __name__ == "__main__":
     INPUT_FILE = "Final_Cleaned_Dataset_OPTIC_7.csv"
-    OUTPUT_FILE = "Proprocessed_Dataset_2.csv"
+    OUTPUT_FILE = "Proprocessed_Dataset.csv"
     preprocess_for_ml(
         input_filepath=INPUT_FILE,
         remove_outliers=True,
