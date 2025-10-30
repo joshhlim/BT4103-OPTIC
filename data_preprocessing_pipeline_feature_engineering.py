@@ -27,7 +27,7 @@ TARGETS = ["ACTUAL_SURGERY_DURATION", "ACTUAL_USAGE_DURATION"]  # Both targets r
 
 CATEGORICAL_FEATURES = [
     'ROOM', 'CASE_STATUS', 'OPERATION_TYPE', 
-    'EMERGENCY_PRIORITY',
+    'EMERGENCY_PRIORITY', 'SURGICAL_CODE',
     'DISCIPLINE', 
     'SURGEON', 'ANAESTHETIST_TEAM',
     'ANAESTHETIST_MCR_NO',
@@ -190,7 +190,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer
 
 class EquipmentTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, min_count=8):
+    def __init__(self, min_count=10):
         self.min_count = min_count
 
     def fit(self, X, y=None):
@@ -587,15 +587,13 @@ def identify_feature_types(df, target, categorical_features):
     print(f"✓ Total features: {len(all_features)}")
     
     print(f"  - Categorical: {len(cat_features)}")
-    # print(f"    Examples: {cat_features[:3]}")
-    result = ', '.join(cat_features)
-    print(result)
+    result_cat = ', '.join(cat_features)
+    print(result_cat)
     
     print(f"  - Numerical: {len(num_features)}")
-    # print(f"    Examples: {num_features[:3]}")
-    result = ', '.join(num_features)
-    print(result)
-    
+    result_numerical = ', '.join(num_features)
+    print(result_numerical)
+   
     return all_features, cat_features, num_features
 
 # ============================================================================
@@ -769,7 +767,6 @@ def preprocess_for_ml(
         )
         df = pd.concat([df.drop(columns=['EQUIPMENT']), equip_df], axis=1)
 
-    all_features, cat_features, num_features = identify_feature_types(df, None, cat_features_copy)
     perform_quality_checks(df, TARGETS[0])
     perform_quality_checks(df, TARGETS[1])
 
@@ -783,33 +780,30 @@ def preprocess_for_ml(
     # ========================================================================
     print("\n=== ADDING SURGEON AND OPERATION-TYPE MEDIAN STATISTICS ===")
 
-    # --- Median surgery and usage durations per SURGEON ---
-    if {'SURGEON', 'ACTUAL_SURGERY_DURATION', 'ACTUAL_USAGE_DURATION'}.issubset(df.columns):
-        surgeon_stats = (
-            df.groupby('SURGEON')
-              .agg(
-                  SURGEON_MEDIAN_SURGERY=('ACTUAL_SURGERY_DURATION', 'median'),
-                  SURGEON_MEDIAN_USAGE=('ACTUAL_USAGE_DURATION', 'median'),
-                  SURGEON_MEDIAN_CONFIDENCE=('SURGEON', 'count')
-              )
-              .reset_index()
-        )
-        df = df.merge(surgeon_stats, on='SURGEON', how='left')
-        print(f"✓ Added surgeon-level median statistics for {len(surgeon_stats)} surgeons")
+    # --- Add median-based summaries for key categorical variables ---
+    summarisable_categories = ["SURGEON", "OPERATION_TYPE", "SURGICAL_CODE", "ANAESTHETIST_MCR_NO", "ADMISSION_BED", "ROOM", "DISCIPLINE"]
 
-    # --- Median surgery and usage durations per OPERATION_TYPE ---
-    if {'OPERATION_TYPE', 'ACTUAL_SURGERY_DURATION', 'ACTUAL_USAGE_DURATION'}.issubset(df.columns):
-        procedure_stats = (
-            df.groupby('OPERATION_TYPE')
-              .agg(
-                  OPERATION_TYPE_MEDIAN_SURGERY=('ACTUAL_SURGERY_DURATION', 'median'),
-                  OPERATION_TYPE_MEDIAN_USAGE=('ACTUAL_USAGE_DURATION', 'median'),
-                  OPERATION_TYPE_MEDIAN_CONFIDENCE=('OPERATION_TYPE', 'count')
-              )
-              .reset_index()
-        )
-        df = df.merge(procedure_stats, on='OPERATION_TYPE', how='left')
-        print(f"✓ Added operation-type-level median statistics for {len(procedure_stats)} procedures")              
+    for cat in summarisable_categories:
+        if {cat, 'ACTUAL_SURGERY_DURATION', 'ACTUAL_USAGE_DURATION'}.issubset(df.columns):
+            stats = (
+                df.groupby(cat)
+                  .agg(
+                      **{
+                          f"{cat}_MEDIAN_SURGERY": ('ACTUAL_SURGERY_DURATION', 'median'),
+                          f"{cat}_MEDIAN_USAGE": ('ACTUAL_USAGE_DURATION', 'median'),
+                          f"{cat}_MEDIAN_CONFIDENCE": (cat, 'count')
+                      }
+                  )
+                  .reset_index()
+            )
+            df = df.merge(stats, on=cat, how='left')
+            print(f"✓ Added {cat.lower()}-level median statistics for {len(stats)} {cat.lower()}s")
+
+            # # Drop column to prevent multi-collinearity
+            # df = df.drop(columns=[cat])
+            # print(f"✓ Dropped {cat} column to prevent multi-collinearity")
+
+    all_features, cat_features, num_features = identify_feature_types(df, None, cat_features_copy)
 
     if save_data:
         metadata = save_preprocessed_data(df, cat_features, num_features, output_file)
